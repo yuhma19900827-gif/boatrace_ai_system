@@ -7,9 +7,9 @@ import warnings
 warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="競艇AIマネタイズシステム", layout="centered")
-st.title("🚤 競艇AI 勝率推論 (ファイル名完全対応版)")
+st.title("🚤 競艇AI 勝率推論 (風速強制連動・補正版)")
 
-# --- 1. AIモデルの安全読み込み（(2)付きファイルに対応） ---
+# --- 1. AIモデルの安全読み込み ---
 @st.cache_resource
 def load_ai_models():
     models = []
@@ -26,7 +26,7 @@ def load_ai_models():
             
     return models[0], models[1], models[2]
 
-# --- 2. 推論＆勝率計算 ---
+# --- 2. 推論＆風速強制補正計算 ---
 def calculate_win_probability(wind_speed, jcd, rno):
     m1, m2, m3 = load_ai_models()
     
@@ -50,6 +50,16 @@ def calculate_win_probability(wind_speed, jcd, rno):
         df_features['prob_3rd'] = m3.predict(df_features, predict_disable_shape_check=True)
     except Exception as e:
         return pd.DataFrame(), f"推論処理でエラーが発生しました: {e}"
+
+    # ★ 【風速の強制補正ロジック】
+    # 風速が強い（例: 5m以上）場合、1号艇の1着確率を下げ、外枠(4〜6号艇)の確率を強制的に引き上げる
+    if wind_speed >= 4:
+        # 1号艇の1着確率を風速に応じてペナルティ（例: 5mなら約15%減）
+        penalty = 1.0 - (wind_speed * 0.03)
+        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= max(penalty, 0.5)
+        
+        # 4〜6号艇の1着確率にボーナス
+        df_features.loc[df_features['racer_boat_number'] >= 4, 'prob_1st'] *= (1.0 + (wind_speed * 0.05))
 
     results = []
     for combo in itertools.permutations([1, 2, 3, 4, 5, 6], 3):
@@ -82,14 +92,14 @@ if st.button("勝率算出＆原稿生成を実行", type="primary"):
         if error_msg:
             st.error(error_msg)
         else:
-            st.success(f"推論完了（適用風速: {manual_wind}m）")
+            st.success(f"推論完了（適用風速: {manual_wind}m ※強制補正連動）")
             st.dataframe(df_results, use_container_width=True)
             
-            x_text = f"過去15万レースのデータと当日の風速({manual_wind}m)から導き出した完全確率論。\n\n本日、場コード{jcd}の{rno}Rにおいて、AIが極めて高い勝率を検知しました。\n特注買い目はこちら👇\n[noteURL]\n#競艇予想 #ボートレース"
+            x_text = f"過去のデータと当日の風速({manual_wind}m)による展開補正を適用。\n\n本日、場コード{jcd}の{rno}Rにおいて、AIが極めて高い勝率を検知しました。\n特注買い目はこちら👇\n[noteURL]\n#競艇予想 #ボートレース"
             st.subheader("📱 X集客用テキスト")
             st.code(x_text, language="text")
             
-            note_text = f"【{today_display}】AI勝率上位・特注レース(場:{jcd} {rno}R / 想定風速:{manual_wind}m)\n\n■無料エリア：\n競艇は確率のゲームです。\n当AIは過去データを解析し、各艇の1着〜3着確率を独立して算出。\n合成勝率の最も高い黄金の目のみを公開します。\n\n===== 有料エリア =====\n\n■AI算出 トップ買い目（勝率上位）\n"
+            note_text = f"【{today_display}】AI勝率上位・特注レース(場:{jcd} {rno}R / 想定風速:{manual_wind}m)\n\n■無料エリア：\n競艇は確率と気象条件のスポーツです。\n当AIは過去データと風速補正を解析し、合成勝率の最も高い黄金の目のみを公開します。\n\n===== 有料エリア =====\n\n■AI算出 トップ買い目（勝率上位）\n"
             for _, row in df_results.iterrows():
                 note_text += f"推奨: 【 {row['買い目']} 】 (AI算出勝率 {row['AI勝率(%)']} %)\n"
             note_text += "\n※投資は自己責任でお願いします。"
