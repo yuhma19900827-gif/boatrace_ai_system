@@ -13,7 +13,7 @@ st.title("🚤 競艇AI 勝率推論 (完全堅牢・モデル互換修復版)")
 @st.cache_resource
 def load_ai_models():
     models = []
-    filenames = ['lgbm_model_1st.pkl', 'lgbm_model_2nd.pkl', 'lgbm_model_3rd.pkl']
+    filenames = ['lgbm_model_1st (2).pkl', 'lgbm_model_2nd.pkl', 'lgbm_model_3rd.pkl']
     
     for filename in filenames:
         try:
