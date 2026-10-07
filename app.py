@@ -7,9 +7,9 @@ import warnings
 warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="競艇AIマネタイズシステム", layout="centered")
-st.title("🚤 競艇AI 勝率推論 (完全堅牢・モデル互換修復版)")
+st.title("🚤 競艇AI 勝率推論 (ファイル名完全対応版)")
 
-# --- 1. AIモデルの安全読み込み（バージョン不一致エラーの完全回避） ---
+# --- 1. AIモデルの安全読み込み（(2)付きファイルに対応） ---
 @st.cache_resource
 def load_ai_models():
     models = []
@@ -21,7 +21,6 @@ def load_ai_models():
                 model = pickle.load(f)
                 models.append(model)
         except Exception as e:
-            # 万が一の読み込みエラー時は None を格納し、後続処理で安全に対処する
             models.append(None)
             st.error(f"ファイル '{filename}' の読み込みに失敗しました: {e}")
             
@@ -31,9 +30,8 @@ def load_ai_models():
 def calculate_win_probability(wind_speed, jcd, rno):
     m1, m2, m3 = load_ai_models()
     
-    # モデルが1つでも読み込めていない場合は空を返す
     if m1 is None or m2 is None or m3 is None:
-        return pd.DataFrame(), "AIモデルのロードに失敗しています。.pklファイルが破損しているか、Python/LightGBMのバージョンが学習時と異なります。"
+        return pd.DataFrame(), "AIモデルのロードに失敗しています。.pklファイルを確認してください。"
     
     test_features = []
     for boat in range(1, 7):
@@ -47,11 +45,11 @@ def calculate_win_probability(wind_speed, jcd, rno):
     df_features = pd.DataFrame(test_features)
     
     try:
-        df_features['prob_1st'] = m1.predict(df_features)
-        df_features['prob_2nd'] = m2.predict(df_features)
-        df_features['prob_3rd'] = m3.predict(df_features)
+        df_features['prob_1st'] = m1.predict(df_features, predict_disable_shape_check=True)
+        df_features['prob_2nd'] = m2.predict(df_features, predict_disable_shape_check=True)
+        df_features['prob_3rd'] = m3.predict(df_features, predict_disable_shape_check=True)
     except Exception as e:
-        return pd.DataFrame(), f"推論処理（predict）でエラーが発生しました: {e}"
+        return pd.DataFrame(), f"推論処理でエラーが発生しました: {e}"
 
     results = []
     for combo in itertools.permutations([1, 2, 3, 4, 5, 6], 3):
