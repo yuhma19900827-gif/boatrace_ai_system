@@ -84,4 +84,63 @@ def calculate_expected_value(df_odds, wind_speed, course_data, jcd, rno):
 
     results = []
     for combo in itertools.permutations([1, 2, 3, 4, 5, 6], 3):
-        b
+        b1, b2, b3 = combo
+        p1 = df_features[df_features['racer_boat_number'] == b1]['prob_1st'].values[0]
+        p2 = df_features[df_features['racer_boat_number'] == b2]['prob_2nd'].values[0]
+        p3 = df_features[df_features['racer_boat_number'] == b3]['prob_3rd'].values[0]
+        
+        combined_prob = p1 * p2 * p3
+        combo_str = f"{b1}-{b2}-{b3}"
+        
+        odds_row = df_odds[df_odds['買い目'] == combo_str]
+        if not odds_row.empty:
+            real_odds = odds_row['オッズ'].values[0]
+            expected_value = combined_prob * real_odds
+            
+            if expected_value > 1.0: 
+                results.append({
+                    '買い目': combo_str,
+                    'AI勝率': f"{combined_prob*100:.2f}%",
+                    '実オッズ': real_odds,
+                    '期待値': round(expected_value, 2)
+                })
+                
+    df_results = pd.DataFrame(results)
+    if not df_results.empty:
+        df_results = df_results.sort_values('期待値', ascending=False).head(5)
+    return df_results
+
+# --- 5. UIと実行制御 ---
+col1, col2 = st.columns(2)
+with col1: jcd = st.selectbox("開催場コード (01〜24)", [f"{i:02d}" for i in range(1, 25)])
+with col2: rno = st.selectbox("レース番号", [str(i) for i in range(1, 13)])
+
+if st.button("期待値算出＆原稿生成を実行", type="primary"):
+    today_str = datetime.now().strftime('%Y%m%d')
+    today_display = datetime.now().strftime('%Y年%m月%d日')
+    
+    with st.spinner("情報取得・推論・期待値計算中..."):
+        df_odds = fetch_realtime_odds(jcd, rno, today_str)
+        wind_speed, course_data = fetch_before_info(jcd, rno, today_str)
+        
+        if df_odds.empty:
+            st.error("オッズが取得できませんでした。")
+        else:
+            df_results = calculate_expected_value(df_odds, wind_speed, course_data, jcd, rno)
+            
+            if df_results.empty:
+                st.warning("期待値1.0を超える買い目が存在しません。（見送り推奨）")
+            else:
+                st.success(f"抽出完了（風速: {wind_speed}m）")
+                st.dataframe(df_results, use_container_width=True)
+                
+                x_text = f"勝率80%のガチガチのイン逃げを買う奴は、競艇を一生勝てない。\n\nAIが過去15万レースを解析した結果、本日大衆が完全に「見落としている」異常オッズが場コード{jcd}の{rno}Rで発生しています。\n資金をドブに捨てる前に確率論で刈り取れ。\n本日のAI特注穴目👇\n[noteURL]\n#競艇予想 #万舟"
+                st.subheader("📱 X集客用テキスト")
+                st.code(x_text, language="text")
+                
+                note_text = f"【{today_display}】AI検知の異常オッズ。特注レース(場:{jcd} {rno}R)\n\n■無料エリア：\n競艇はオッズの歪み（期待値）を刈り取るゲームです。\nAIが算出した「勝率は低いが、オッズが異常に高い」黄金の目のみを公開します。\n\n===== 有料エリア =====\n\n"
+                for _, row in df_results.iterrows():
+                    note_text += f"推奨: 【 {row['買い目']} 】 (期待値 {row['期待値']} / オッズ {row['実オッズ']}倍)\n"
+                note_text += "\n※投資は自己責任でお願いします。"
+                st.subheader("📝 note販売用テキスト")
+                st.code(note_text, language="text")
