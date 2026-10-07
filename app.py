@@ -1,49 +1,25 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import requests
 import itertools
 from datetime import datetime
 import pickle
-from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競艇AI 統合版", layout="centered")
-st.title("🚤 競艇AI 勝率推論 (選手データ統合＆風速手動変更版)")
+st.set_page_config(page_title="競艇AIマネタイズシステム", layout="centered")
+st.title("🚤 競艇AI 勝率推論 (環境依存・完全自走版)")
 
-# --- 1. 出走表（勝率・モーター）スクレイピング ---
-def fetch_racelist_data(jcd, rno, date_str):
-    url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={date_str}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    racer_data = {}
-    try:
-        response = requests.get(url, headers=headers)
-        # 簡易的にテーブルを取得し、勝率とモーター連対率を抽出（失敗時は標準値を適用）
-        tables = pd.read_html(response.content, encoding='utf-8')
-        df_list = tables[0] 
-        for boat in range(1, 7):
-            racer_data[boat] = {
-                'win_rate': 5.0, # スクレイピング失敗時のデフォルト（A2級相当）
-                'motor_rate': 30.0 # デフォルトモーター連対率
-            }
-        return racer_data
-    except:
-        for boat in range(1, 7):
-            racer_data[boat] = {'win_rate': 5.0, 'motor_rate': 30.0}
-        return racer_data
-
-# --- 2. AIモデル読み込み（v2モデル） ---
+# --- 1. AIモデル読み込み ---
 @st.cache_resource
 def load_ai_models():
     try:
-        with open('lgbm_model_1st_v2.pkl', 'rb') as f: m1 = pickle.load(f)
-        with open('lgbm_model_2nd_v2.pkl', 'rb') as f: m2 = pickle.load(f)
-        with open('lgbm_model_3rd_v2.pkl', 'rb') as f: m3 = pickle.load(f)
+        with open('lgbm_model_1st.pkl', 'rb') as f: m1 = pickle.load(f)
+        with open('lgbm_model_2nd.pkl', 'rb') as f: m2 = pickle.load(f)
+        with open('lgbm_model_3rd.pkl', 'rb') as f: m3 = pickle.load(f)
         return m1, m2, m3
     except FileNotFoundError:
         return None, None, None
 
-# --- 3. 推論＆勝率計算 ---
-def calculate_win_probability(wind_speed, jcd, rno, racer_data):
+# --- 2. 推論＆勝率計算 ---
+def calculate_win_probability(wind_speed, jcd, rno):
     m1, m2, m3 = load_ai_models()
     
     test_features = []
@@ -52,15 +28,13 @@ def calculate_win_probability(wind_speed, jcd, rno, racer_data):
             'race_stadium_number': int(jcd),
             'race_number': int(rno),
             'racer_boat_number': boat,
-            'racer_course_number': boat, # 枠なりと仮定
-            'race_wind': wind_speed,
-            'racer_win_rate': racer_data[boat]['win_rate'],
-            'racer_motor_quinella_rate': racer_data[boat]['motor_rate']
+            'racer_course_number': boat, # 枠なり進入で固定
+            'race_wind': wind_speed
         })
     df_features = pd.DataFrame(test_features)
     
     if m1 is None:
-        return pd.DataFrame() # モデルがない場合は空を返す
+        return pd.DataFrame()
         
     df_features['prob_1st'] = m1.predict(df_features)
     df_features['prob_2nd'] = m2.predict(df_features)
@@ -82,28 +56,31 @@ def calculate_win_probability(wind_speed, jcd, rno, racer_data):
     df_results = pd.DataFrame(results).sort_values('AI勝率(%)', ascending=False).head(10)
     return df_results
 
-# --- 4. UI構築（風速スライダー追加） ---
+# --- 3. UIと実行制御 ---
 col1, col2 = st.columns(2)
-with col1: jcd = st.selectbox("開催場コード", [f"{i:02d}" for i in range(1, 25)])
+with col1: jcd = st.selectbox("開催場コード (01〜24)", [f"{i:02d}" for i in range(1, 25)])
 with col2: rno = st.selectbox("レース番号", [str(i) for i in range(1, 13)])
-
-# ★ 風速の手動設定スライダー（0m 〜 10m）
 manual_wind = st.slider("想定風速 (m)", min_value=0, max_value=10, value=2, step=1)
 
 if st.button("勝率算出＆原稿生成を実行", type="primary"):
-    today_str = datetime.now().strftime('%Y%m%d')
     today_display = datetime.now().strftime('%Y年%m月%d日')
     
-    with st.spinner("出走表取得・AI推論中..."):
-        racer_data = fetch_racelist_data(jcd, rno, today_str)
-        df_results = calculate_win_probability(manual_wind, jcd, rno, racer_data)
+    with st.spinner("AI推論中..."):
+        df_results = calculate_win_probability(manual_wind, jcd, rno)
         
         if df_results.empty:
-            st.error("モデルファイル(_v2.pkl)が見つかりません。GitHubへのアップロードを確認しろ。")
+            st.error("エラー：AIモデル（.pkl）が見つかりません。ファイル名を確認しろ。")
         else:
             st.success(f"推論完了（適用風速: {manual_wind}m）")
             st.dataframe(df_results, use_container_width=True)
             
-            x_text = f"過去15万レースのデータ（選手勝率・モーター性能・風速）から導き出した完全確率論。\n\n本日、場コード{jcd}の{rno}Rにおいて、AIが極めて高い勝率を検知しました。\n特注買い目はこちら👇\n[noteURL]\n#競艇予想 #ボートレース"
+            x_text = f"過去15万レースのデータと当日の風速から導き出した完全確率論。\n\n本日、場コード{jcd}の{rno}Rにおいて、AIが極めて高い勝率を検知しました。\n特注買い目はこちら👇\n[noteURL]\n#競艇予想 #ボートレース"
             st.subheader("📱 X集客用テキスト")
             st.code(x_text, language="text")
+            
+            note_text = f"【{today_display}】AI勝率上位・特注レース(場:{jcd} {rno}R)\n\n■無料エリア：\n競艇は確率のゲームです。\n当AIは過去データを解析し、各艇の1着〜3着確率を独立して算出。\n合成勝率の最も高い黄金の目のみを公開します。\n\n===== 有料エリア =====\n\n■AI算出 トップ買い目（勝率上位）\n"
+            for _, row in df_results.iterrows():
+                note_text += f"推奨: 【 {row['買い目']} 】 (AI算出勝率 {row['AI勝率(%)']} %)\n"
+            note_text += "\n※投資は自己責任でお願いします。"
+            st.subheader("📝 note販売用テキスト")
+            st.code(note_text, language="text")
