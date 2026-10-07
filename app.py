@@ -7,7 +7,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="競艇AIマネタイズシステム", layout="centered")
-st.title("🚤 競艇AI 勝率推論 (風速強制連動・補正版)")
+st.title("🚤 競艇AI 勝率推論 (風速＆波高・手動補正版)")
 
 # --- 1. AIモデルの安全読み込み ---
 @st.cache_resource
@@ -26,8 +26,8 @@ def load_ai_models():
             
     return models[0], models[1], models[2]
 
-# --- 2. 推論＆風速強制補正計算 ---
-def calculate_win_probability(wind_speed, jcd, rno):
+# --- 2. 推論＆風速・波高の複合補正計算 ---
+def calculate_win_probability(wind_speed, wave_height, jcd, rno):
     m1, m2, m3 = load_ai_models()
     
     if m1 is None or m2 is None or m3 is None:
@@ -51,15 +51,23 @@ def calculate_win_probability(wind_speed, jcd, rno):
     except Exception as e:
         return pd.DataFrame(), f"推論処理でエラーが発生しました: {e}"
 
-    # ★ 【風速の強制補正ロジック】
-    # 風速が強い（例: 5m以上）場合、1号艇の1着確率を下げ、外枠(4〜6号艇)の確率を強制的に引き上げる
-    if wind_speed >= 4:
-        # 1号艇の1着確率を風速に応じてペナルティ（例: 5mなら約15%減）
-        penalty = 1.0 - (wind_speed * 0.03)
-        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= max(penalty, 0.5)
-        
-        # 4〜6号艇の1着確率にボーナス
-        df_features.loc[df_features['racer_boat_number'] >= 4, 'prob_1st'] *= (1.0 + (wind_speed * 0.05))
+    # ★ 【風速 ＆ 波高の複合補正ロジック】
+    # 波高が高く（例: 5cm以上）、かつ風速もある場合、イン（1号艇）に大きなペナルティを与え、外枠を大きく引き上げる
+    # 逆に波高が低い（静水面）ならインが強くなる補正を入れる
+    
+    # 基準ペナルティ/ボーナスの計算
+    wind_factor = max(0, wind_speed - 2) * 0.02  # 風速2m超から影響
+    wave_factor = wave_height * 0.03             # 波高1cmあたりの影響
+    
+    total_penalty = wind_factor + wave_factor
+    
+    if wave_height >= 5 or wind_speed >= 5:
+        # 荒れ水面・強風時の補正（インが飛ぶ）
+        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= max(1.0 - total_penalty, 0.4)
+        df_features.loc[df_features['racer_boat_number'] >= 4, 'prob_1st'] *= (1.0 + total_penalty)
+    elif wave_height <= 2 and wind_speed <= 2:
+        # 静水面・微風時の補正（インが圧倒的に有利）
+        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 1.15
 
     results = []
     for combo in itertools.permutations([1, 2, 3, 4, 5, 6], 3):
@@ -81,25 +89,28 @@ def calculate_win_probability(wind_speed, jcd, rno):
 col1, col2 = st.columns(2)
 with col1: jcd = st.selectbox("開催場コード (01〜24)", [f"{i:02d}" for i in range(1, 25)])
 with col2: rno = st.selectbox("レース番号", [str(i) for i in range(1, 13)])
+
+# ★ スライダーの追加（風速 ＆ 波高）
 manual_wind = st.slider("想定風速 (m)", min_value=0, max_value=10, value=2, step=1)
+manual_wave = st.slider("想定波高 (cm)", min_value=0, max_value=15, value=2, step=1)
 
 if st.button("勝率算出＆原稿生成を実行", type="primary"):
     today_display = datetime.now().strftime('%Y年%m月%d日')
     
     with st.spinner("AI推論中..."):
-        df_results, error_msg = calculate_win_probability(manual_wind, jcd, rno)
+        df_results, error_msg = calculate_win_probability(manual_wind, manual_wave, jcd, rno)
         
         if error_msg:
             st.error(error_msg)
         else:
-            st.success(f"推論完了（適用風速: {manual_wind}m ※強制補正連動）")
+            st.success(f"推論完了（適用風速: {manual_wind}m / 波高: {manual_wave}cm）")
             st.dataframe(df_results, use_container_width=True)
             
-            x_text = f"過去のデータと当日の風速({manual_wind}m)による展開補正を適用。\n\n本日、場コード{jcd}の{rno}Rにおいて、AIが極めて高い勝率を検知しました。\n特注買い目はこちら👇\n[noteURL]\n#競艇予想 #ボートレース"
+            x_text = f"風速{manual_wind}m・波高{manual_wave}cmの水面コンディションを完全反映。\n\n本日、場コード{jcd}の{rno}Rにおいて、AIが極めて高い勝率を検知しました。\n特注買い目はこちら👇\n[noteURL]\n#競艇予想 #ボートレース"
             st.subheader("📱 X集客用テキスト")
             st.code(x_text, language="text")
             
-            note_text = f"【{today_display}】AI勝率上位・特注レース(場:{jcd} {rno}R / 想定風速:{manual_wind}m)\n\n■無料エリア：\n競艇は確率と気象条件のスポーツです。\n当AIは過去データと風速補正を解析し、合成勝率の最も高い黄金の目のみを公開します。\n\n===== 有料エリア =====\n\n■AI算出 トップ買い目（勝率上位）\n"
+            note_text = f"【{today_display}】AI勝率上位・特注レース(場:{jcd} {rno}R / 風速:{manual_wind}m 波高:{manual_wave}cm)\n\n■無料エリア：\n競艇は水上の格闘技であり、波と風のスポーツです。\n当AIは過去データに加え、現地の水面状況（波高・風速）による緊迫の展開補正をかけ、最も期待値の高い黄金の目のみを抽出します。\n\n===== 有料エリア =====\n\n■AI算出 トップ買い目（勝率上位）\n"
             for _, row in df_results.iterrows():
                 note_text += f"推奨: 【 {row['買い目']} 】 (AI算出勝率 {row['AI勝率(%)']} %)\n"
             note_text += "\n※投資は自己責任でお願いします。"
