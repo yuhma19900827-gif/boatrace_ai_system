@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="競艇AIマネタイズシステム", layout="centered")
-st.title("🚤 競艇AI 勝率推論 (スクレイピング完全対応版)")
+st.title("🚤 競艇AI 勝率推論 (全選手データ自動取得版)")
 
 # --- 1. AIモデルの安全読み込み ---
 @st.cache_resource
@@ -53,18 +53,17 @@ def fetch_race_card(jcd, rno):
                 # 各セルの取得
                 tds = tbody.find_all('td')
                 
-                # ★修正ポイント：セル内の文字列を分割して正確に抽出する
                 # tds[4] = 全国成績（1行目: 勝率, 2行目: 2連対率, 3行目: 3連対率）
                 try:
                     national_data = list(tds[4].stripped_strings)
-                    win_rate = float(national_data[0]) # 1つ目の数値（勝率）を取得
+                    win_rate = float(national_data[0])
                 except:
                     win_rate = 5.0
                     
                 # tds[6] = モーター成績（1行目: No, 2行目: 2連対率, 3行目: 3連対率）
                 try:
                     motor_data = list(tds[6].stripped_strings)
-                    motor_rate = float(motor_data[1]) # 2つ目の数値（2連対率）を取得
+                    motor_rate = float(motor_data[1])
                 except:
                     motor_rate = 30.0
                     
@@ -146,4 +145,37 @@ with col1: jcd = st.selectbox("開催場コード (01〜24)", [f"{i:02d}" for i 
 with col2: rno = st.selectbox("レース番号", [str(i) for i in range(1, 13)])
 
 wind_direction = st.selectbox("風向", ["追い風", "向かい風", "横風・その他"])
-manual_wind = st.slider("想定風速
+manual_wind = st.slider("想定風速 (m)", min_value=0, max_value=10, value=2, step=1)
+manual_wave = st.slider("想定波高 (cm)", min_value=0, max_value=15, value=2, step=1)
+
+if st.button("出走データ自動取得 ＆ 勝率算出", type="primary"):
+    today_display = datetime.now().strftime('%Y年%m月%d日')
+    
+    with st.spinner("公式サイトから選手データをスクレイピング中..."):
+        df_racers, fetch_error = fetch_race_card(jcd, rno)
+        
+    if fetch_error:
+        st.error(fetch_error)
+    else:
+        st.success("選手データ・モーター情報の自動取得に成功しました。")
+        st.write("▼ 取得した出走表データ（内部計算用）")
+        st.dataframe(df_racers, use_container_width=True)
+        
+        with st.spinner("AI推論中..."):
+            df_results, error_msg = calculate_win_probability(df_racers, wind_direction, manual_wind, manual_wave, jcd, rno)
+            
+            if error_msg:
+                st.error(error_msg)
+            else:
+                st.dataframe(df_results, use_container_width=True)
+                
+                x_text = f"【選手勝率×機力×水面】完全統合AI発動\n\n本日、場コード{jcd}の{rno}Rにおいて、AIが極秘の特注買い目を検知しました。\n特注買い目はこちら👇\n[noteURL]\n#競艇予想 #ボートレース"
+                st.subheader("📱 X集客用テキスト")
+                st.code(x_text, language="text")
+                
+                note_text = f"【{today_display}】AI勝率上位・特注レース(場:{jcd} {rno}R)\n\n■無料エリア：\n当AIは、各選手の全国勝率・モーター機力、そして現地の気象条件をリアルタイムで取得し、すべてのデータを統合して期待値を出力しています。\n\n===== 有料エリア =====\n\n■AI算出 トップ買い目（勝率上位）\n"
+                for _, row in df_results.iterrows():
+                    note_text += f"推奨: 【 {row['買い目']} 】 (AI算出勝率 {row['AI勝率(%)']} %)\n"
+                note_text += "\n※投資は自己責任でお願いします。"
+                st.subheader("📝 note販売用テキスト")
+                st.code(note_text, language="text")
