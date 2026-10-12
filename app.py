@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 st.set_page_config(page_title="競艇AIマネタイズシステム", layout="centered")
-st.title("🚤 競艇AI 勝率推論 (全選手データ自動取得版)")
+st.title("🚤 競艇AI 勝率推論 (選手データ完全自動取得版)")
 
 # --- 1. AIモデルの安全読み込み ---
 @st.cache_resource
@@ -29,9 +29,6 @@ def load_ai_models():
 
 # --- 2. 出走表（選手データ）の全自動スクレイピング ---
 def fetch_race_card(jcd, rno):
-    """
-    指定した場・レースの出走表を公式サイトから自動取得する
-    """
     today = datetime.now().strftime('%Y%m%d')
     url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={today}"
     
@@ -41,36 +38,36 @@ def fetch_race_card(jcd, rno):
         soup = BeautifulSoup(response.text, 'html.parser')
         
         racers = []
-        # ボートレース公式サイトの出走表から1〜6号艇を抽出
         tbodies = soup.find_all('tbody', class_='is-fs12')
         
         if not tbodies or len(tbodies) < 6:
-            return None, "出走表データがまだ公開されていないか、取得できませんでした。"
+            return None, "出走表データが取得できません。開催日か場コードを確認してください。"
             
         for i in range(6):
             tbody = tbodies[i]
             try:
                 # 選手名の抽出
                 name_div = tbody.find('div', class_='is-fs18')
-                name = name_div.text.strip() if name_div else f"{i+1}号艇選手"
-                
-                # 勝率・モーター率の抽出（tdタグの中から取得）
+                name = name_div.find('a').text.strip() if name_div and name_div.find('a') else f"{i+1}号艇選手"
+                if not name_div or not name_div.find('a'):
+                     name = name_div.text.strip() if name_div else f"{i+1}号艇選手"
+
+                # 全国勝率・モーター2連対率の抽出
                 tds = tbody.find_all('td')
                 
-                # 公式サイトの構造上、全国勝率は5番目、モーター2連対率は7番目付近にあることが多い
-                # ※構造変動に備えてエラー時は平均値で補完
+                # 公式サイトの出走表： 全国勝率は tds[4]、 モーター2連対率は tds[6] に配置されている
                 try:
                     win_rate = float(tds[4].text.strip())
                 except:
-                    win_rate = 5.0 # 取得失敗時のB級平均想定
+                    win_rate = 5.0
                     
                 try:
                     motor_rate = float(tds[6].text.strip())
                 except:
-                    motor_rate = 30.0 # 取得失敗時の平均想定
+                    motor_rate = 30.0
                     
             except Exception as e:
-                name = f"{i+1}号艇(取得失敗)"
+                name = f"{i+1}号艇(取得エラー)"
                 win_rate = 5.0
                 motor_rate = 30.0
                 
@@ -94,8 +91,6 @@ def calculate_win_probability(df_racers, wind_direction, wind_speed, wave_height
     
     test_features = []
     for boat in range(1, 7):
-        racer_data = df_racers[df_racers['boat'] == boat].iloc[0]
-        
         test_features.append({
             'race_stadium_number': int(jcd),
             'race_number': int(rno),
@@ -116,17 +111,16 @@ def calculate_win_probability(df_racers, wind_direction, wind_speed, wave_height
     for boat in range(1, 7):
         racer_data = df_racers[df_racers['boat'] == boat].iloc[0]
         
-        # 選手勝率(基準5.0)とモーター性能(基準30.0)による補正倍率の計算
-        # 勝率7.0のA1ならプラス補正、勝率4.0ならマイナス補正
+        # 勝率とモーター率による補正倍率の計算
         ability_multiplier = 1.0 + ((racer_data['win_rate'] - 5.0) * 0.1) + ((racer_data['motor_rate'] - 30.0) * 0.01)
         df_features.loc[df_features['racer_boat_number'] == boat, 'prob_1st'] *= max(0.1, ability_multiplier)
 
-    # 環境要因（風向・風速・波高）のハード補正
+    # 環境要因のハード補正
     if wind_direction == "向かい風" and (wind_speed >= 4 or wave_height >= 5):
-        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 0.15 # 1号艇を大幅減点
-        df_features.loc[df_features['racer_boat_number'] >= 3, 'prob_1st'] *= 1.40 # 3〜6号艇を大幅加点
+        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 0.15 
+        df_features.loc[df_features['racer_boat_number'] >= 3, 'prob_1st'] *= 1.40 
     elif wind_direction == "追い風" and wave_height < 3:
-        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 1.50 # 1号艇鉄板化
+        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 1.50 
 
     results = []
     for combo in itertools.permutations([1, 2, 3, 4, 5, 6], 3):
