@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import itertools
 import pickle
 import warnings
@@ -29,7 +29,10 @@ def load_ai_models():
 
 # --- 2. 出走表（選手データ）の全自動スクレイピング ---
 def fetch_race_card(jcd, rno):
-    today = datetime.now().strftime('%Y%m%d')
+    # ★修正：日本時間(JST)を強制指定
+    JST = timezone(timedelta(hours=+9), 'JST')
+    today = datetime.now(JST).strftime('%Y%m%d')
+    
     url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={today}"
     
     try:
@@ -53,14 +56,14 @@ def fetch_race_card(jcd, rno):
                 # 各セルの取得
                 tds = tbody.find_all('td')
                 
-                # tds[4] = 全国成績（1行目: 勝率, 2行目: 2連対率, 3行目: 3連対率）
+                # tds[4] = 全国成績
                 try:
                     national_data = list(tds[4].stripped_strings)
                     win_rate = float(national_data[0])
                 except:
                     win_rate = 5.0
                     
-                # tds[6] = モーター成績（1行目: No, 2行目: 2連対率, 3行目: 3連対率）
+                # tds[6] = モーター成績
                 try:
                     motor_data = list(tds[6].stripped_strings)
                     motor_rate = float(motor_data[1])
@@ -149,7 +152,9 @@ manual_wind = st.slider("想定風速 (m)", min_value=0, max_value=10, value=2, 
 manual_wave = st.slider("想定波高 (cm)", min_value=0, max_value=15, value=2, step=1)
 
 if st.button("出走データ自動取得 ＆ 勝率算出", type="primary"):
-    today_display = datetime.now().strftime('%Y年%m月%d日')
+    # ★修正：日本時間(JST)を強制指定
+    JST = timezone(timedelta(hours=+9), 'JST')
+    today_display = datetime.now(JST).strftime('%Y年%m月%d日')
     
     with st.spinner("公式サイトから選手データをスクレイピング中..."):
         df_racers, fetch_error = fetch_race_card(jcd, rno)
