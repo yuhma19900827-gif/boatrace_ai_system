@@ -28,7 +28,7 @@ def load_ai_models():
             
     return models[0], models[1], models[2]
 
-# --- 2. 出走表（勝率・モーター・F持ち）の自動スクレイピング（★絶対抽出版） ---
+# --- 2. 出走表（勝率・モーター・F持ち）の自動スクレイピング ---
 def fetch_race_card(jcd, rno):
     JST = timezone(timedelta(hours=+9), 'JST')
     today = datetime.now(JST).strftime('%Y%m%d')
@@ -44,73 +44,80 @@ def fetch_race_card(jcd, rno):
             break
         except requests.exceptions.RequestException as e:
             if attempt == max_retries - 1:
-                return None, f"データ取得エラー: 公式サイトが混雑しています ({e})"
+                return None, f"通信エラー ({e})"
             time.sleep(2)
 
     if not soup:
-        return None, "HTMLの解析に失敗しました。"
+        return None, "HTML解析エラー"
 
     try:
         racers = []
-        # ★修正：関係ないテーブルを無視し、「枠番の色（is-boatColorX）」を基準に親ブロックを特定する
-        for i in range(1, 7):
-            boat_td = soup.find('td', class_=f'is-boatColor{i}')
-            if not boat_td:
-                continue
-                
-            tbody = boat_td.find_parent('tbody')
+        # ★究極修正：「toban=」が含まれる選手プロフィールへのリンクを直接狙撃する
+        racer_links = soup.find_all('a', href=lambda href: href and 'toban=' in href)
+        
+        for a_tag in racer_links:
+            # リンクの親要素（tbody）を特定し、選手のデータブロックを完全隔離
+            tbody = a_tag.find_parent('tbody')
             if not tbody:
                 continue
+                
+            # ブロック内から1〜6号艇のカラータグを探して枠番を確定
+            boat = None
+            for i in range(1, 7):
+                if tbody.find('td', class_=f'is-boatColor{i}'):
+                    boat = i
+                    break
+                    
+            if not boat:
+                continue
+                
+            # すでにこの号艇がリストにいる場合はスキップ（重複取得防止）
+            if any(r['boat'] == boat for r in racers):
+                continue
+                
+            name = a_tag.text.strip()
+            tds = tbody.find_all('td')
+            
+            # F持ち情報の取得
+            has_f = False
+            for td in tds:
+                txt = td.text
+                if "F1" in txt or "F2" in txt or "F3" in txt:
+                    has_f = True
+                    break
 
             try:
-                name_div = tbody.find('div', class_='is-fs18')
-                name = name_div.find('a').text.strip() if name_div and name_div.find('a') else f"{i}号艇選手"
-
-                tds = tbody.find_all('td')
-                
-                # F持ち情報の取得（テキスト全体からF1〜F3を探す堅牢版）
-                has_f = False
-                for td in tds:
-                    txt = td.text
-                    if "F1" in txt or "F2" in txt or "F3" in txt:
-                        has_f = True
-                        break
-
-                try:
-                    national_data = list(tds[4].stripped_strings)
-                    win_rate = float(national_data[0])
-                except:
-                    win_rate = 5.0
-                    
-                try:
-                    motor_data = list(tds[6].stripped_strings)
-                    motor_rate = float(motor_data[1])
-                except:
-                    motor_rate = 30.0
-                    
-            except Exception as e:
-                name = f"{i}号艇(パースエラー)"
+                national_data = list(tds[4].stripped_strings)
+                win_rate = float(national_data[0])
+            except:
                 win_rate = 5.0
+                
+            try:
+                motor_data = list(tds[6].stripped_strings)
+                motor_rate = float(motor_data[1])
+            except:
                 motor_rate = 30.0
-                has_f = False
                 
             racers.append({
-                'boat': i,
+                'boat': boat,
                 'name': name,
                 'win_rate': win_rate,
                 'motor_rate': motor_rate,
                 'has_f': has_f
             })
             
-        if not racers:
-            return None, "出走表データが公開されていません。"
+        # 枠番順に並び替え
+        racers = sorted(racers, key=lambda x: x['boat'])
+        
+        if not racers or len(racers) < 2:
+            return None, "出走表がまだ公開されていないか、データが取得できません。"
             
         return pd.DataFrame(racers), None
     except Exception as e:
         return None, f"データ抽出エラー ({e})"
 
 # --- 2.5 直前情報（展示タイム）の自動スクレイピング ---
-def fetch_beforeinfo(jcd, rno, df_racers):
+def fetch_beforeinfo(jcd, rno):
     JST = timezone(timedelta(hours=+9), 'JST')
     today = datetime.now(JST).strftime('%Y%m%d')
     url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={today}"
@@ -133,28 +140,34 @@ def fetch_beforeinfo(jcd, rno, df_racers):
 
     times = {}
     try:
-        blocks = soup.find_all(['tbody', 'tr'])
+        # 展示情報ページでも「toban=」のリンクを基準にブロックを特定
+        racer_links = soup.find_all('a', href=lambda href: href and 'toban=' in href)
         
-        for index, row in df_racers.iterrows():
-            boat = row['boat']
-            target_name = row['name'].replace(" ", "").replace(" ", "")
-            
-            for block in blocks:
-                block_text = block.text.replace(" ", "").replace(" ", "")
-                if target_name in block_text:
-                    tds = block.find_all('td')
-                    for td in tds:
-                        txt = td.text.strip()
-                        try:
-                            val = float(txt)
-                            if 6.0 <= val <= 7.5:
-                                times[boat] = val
-                                break
-                        except:
-                            continue
+        for a_tag in racer_links:
+            tbody = a_tag.find_parent('tbody')
+            if not tbody:
+                continue
+                
+            boat = None
+            for i in range(1, 7):
+                if tbody.find('td', class_=f'is-boatColor{i}'):
+                    boat = i
+                    break
                     
-                    if boat in times:
+            if not boat or boat in times:
+                continue
+                
+            # その選手のブロック内から「6.x〜7.x秒」の展示タイムを抽出
+            tds = tbody.find_all('td')
+            for td in tds:
+                txt = td.text.strip()
+                try:
+                    val = float(txt)
+                    if 6.0 <= val <= 7.5:
+                        times[boat] = val
                         break
+                except:
+                    continue
                         
         if len(times) > 0:
             return times
@@ -171,13 +184,19 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
     
     test_features = []
     for boat in range(1, 7):
-        test_features.append({
-            'race_stadium_number': int(jcd),
-            'race_number': int(rno),
-            'racer_boat_number': boat,
-            'racer_course_number': boat, 
-            'race_wind': int(wind_speed)
-        })
+        # 欠場などでデータがない場合はスキップしないようダミーを入れる
+        if boat in df_racers['boat'].values:
+            test_features.append({
+                'race_stadium_number': int(jcd),
+                'race_number': int(rno),
+                'racer_boat_number': boat,
+                'racer_course_number': boat, 
+                'race_wind': int(wind_speed)
+            })
+    
+    if len(test_features) != 6:
+        return pd.DataFrame(), "6艇分のデータが揃っていません（欠場艇あり）。"
+        
     df_features = pd.DataFrame(test_features)
     
     try:
@@ -187,7 +206,7 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
     except Exception as e:
         return pd.DataFrame(), f"推論処理エラー: {e}"
 
-    boat1_win_rate = df_racers[df_racers['boat'] == 1].iloc[0]['win_rate']
+    boat1_win_rate = df_racers[df_racers['boat'] == 1].iloc[0]['win_rate'] if 1 in df_racers['boat'].values else 5.0
     
     for boat in range(1, 7):
         racer_data = df_racers[df_racers['boat'] == boat].iloc[0]
@@ -212,11 +231,15 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_2nd'] *= 1.30
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_3rd'] *= 1.30
 
-    if boat1_win_rate >= 6.5 and not df_racers[df_racers['boat'] == 1].iloc[0]['has_f']:
-        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 1.50
-    elif boat1_win_rate < 5.0 or df_racers[df_racers['boat'] == 1].iloc[0]['has_f']:
-        df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 0.40
-        df_features.loc[df_features['racer_boat_number'] >= 3, 'prob_1st'] *= 1.40
+    # 1号艇のデータが存在する場合のみ鉄板・崩壊ロジックを適用
+    boat1_data = df_racers[df_racers['boat'] == 1]
+    if not boat1_data.empty:
+        has_f_1 = boat1_data.iloc[0]['has_f']
+        if boat1_win_rate >= 6.5 and not has_f_1:
+            df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 1.50
+        elif boat1_win_rate < 5.0 or has_f_1:
+            df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 0.40
+            df_features.loc[df_features['racer_boat_number'] >= 3, 'prob_1st'] *= 1.40
 
     if wind_direction == "向かい風" and (wind_speed >= 4 or wave_height >= 5):
         df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 0.10 
@@ -264,7 +287,8 @@ if st.button("AI推論実行 (出走表・直前情報自動取得)", type="prim
         df_racers, fetch_error = fetch_race_card(jcd, rno)
         dict_exhibition = None
         if not fetch_error:
-            dict_exhibition = fetch_beforeinfo(jcd, rno, df_racers)
+            # df_racers を渡さずとも独立して取得可能に変更済
+            dict_exhibition = fetch_beforeinfo(jcd, rno)
         
     if fetch_error:
         st.error(fetch_error)
