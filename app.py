@@ -52,21 +52,18 @@ def fetch_race_card(jcd, rno):
 
                 tds = tbody.find_all('td')
                 
-                # F持ち情報の取得
                 try:
                     f_text = tds[3].text.strip()
                     has_f = ("F1" in f_text) or ("F2" in f_text) or ("F3" in f_text)
                 except:
                     has_f = False
 
-                # 全国勝率の取得
                 try:
                     national_data = list(tds[4].stripped_strings)
                     win_rate = float(national_data[0])
                 except:
                     win_rate = 5.0
                     
-                # モーター2連対率の取得
                 try:
                     motor_data = list(tds[6].stripped_strings)
                     motor_rate = float(motor_data[1])
@@ -91,8 +88,8 @@ def fetch_race_card(jcd, rno):
     except Exception as e:
         return None, f"データ取得エラー ({e})"
 
-# --- 2.5 直前情報（展示タイム）の自動スクレイピング（★絶対抽出版） ---
-def fetch_beforeinfo(jcd, rno):
+# --- 2.5 直前情報（展示タイム）の自動スクレイピング（★選手名追尾型ロジック） ---
+def fetch_beforeinfo(jcd, rno, df_racers):
     JST = timezone(timedelta(hours=+9), 'JST')
     today = datetime.now(JST).strftime('%Y%m%d')
     url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={today}"
@@ -103,23 +100,33 @@ def fetch_beforeinfo(jcd, rno):
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        for boat in range(1, 7):
-            boat_td = soup.find('td', class_=f'is-boatColor{boat}')
-            if boat_td:
-                row = boat_td.find_parent('tr')
-                tds = row.find_all('td')
-                
-                # ★修正：HTMLの並び順（tdのインデックス）を無視し、展示タイム特有の「6.xx秒」という数値を強制検知する
-                for td in tds:
-                    txt = td.text.strip()
-                    try:
-                        val = float(txt)
-                        # 競艇の展示タイムは物理的に 6.0秒〜7.5秒 の間にしか収まらない。これを検知して引っこ抜く。
-                        if 6.0 <= val <= 7.5:
-                            times[boat] = val
-                            break
-                    except:
-                        continue
+        # ページ内のテーブル行（tr）やブロック（tbody）をすべて取得
+        blocks = soup.find_all(['tbody', 'tr'])
+        
+        for index, row in df_racers.iterrows():
+            boat = row['boat']
+            # 名前からスペースを取り除き、完全一致検索用のターゲットにする
+            target_name = row['name'].replace(" ", "").replace(" ", "")
+            
+            for block in blocks:
+                block_text = block.text.replace(" ", "").replace(" ", "")
+                # ブロック内にその選手の名前が含まれていたら、その選手の行と断定する
+                if target_name in block_text:
+                    tds = block.find_all('td')
+                    for td in tds:
+                        txt = td.text.strip()
+                        try:
+                            val = float(txt)
+                            # 競艇の展示タイムである 6.0秒〜7.5秒 の間なら抽出して確定
+                            if 6.0 <= val <= 7.5:
+                                times[boat] = val
+                                break
+                        except:
+                            continue
+                    
+                    # タイムが見つかれば、次の選手の検索へ進む
+                    if boat in times:
+                        break
                         
         if len(times) > 0:
             return times
@@ -159,10 +166,10 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
         w_rate = racer_data['win_rate']
         m_rate = racer_data['motor_rate']
         
-        # 1. 基本能力値の算出
+        # 基本能力値の算出
         ability_multiplier = 1.0 + ((w_rate - 5.0) * 0.20) + ((m_rate - 30.0) * 0.02)
         
-        # 2. 強者プレミアムとF持ちペナルティ
+        # 強者プレミアムとF持ちペナルティ
         if w_rate >= 6.5:
             ability_multiplier *= 1.30 
         elif w_rate < 4.5:
@@ -173,21 +180,21 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
 
         df_features.loc[df_features['racer_boat_number'] == boat, 'prob_1st'] *= max(0.05, ability_multiplier)
 
-    # 3. 【直前情報：展示タイム1位の爆発的加点】
+    # 【直前情報：展示タイム1位の爆発的加点】
     if dict_exhibition:
         fastest_boat = min(dict_exhibition, key=dict_exhibition.get)
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_1st'] *= 1.40
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_2nd'] *= 1.30
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_3rd'] *= 1.30
 
-    # 4. 【1号艇の鉄板・崩壊ロジック】
+    # 【1号艇の鉄板・崩壊ロジック】
     if boat1_win_rate >= 6.5 and not df_racers[df_racers['boat'] == 1].iloc[0]['has_f']:
         df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 1.50
     elif boat1_win_rate < 5.0 or df_racers[df_racers['boat'] == 1].iloc[0]['has_f']:
         df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 0.40
         df_features.loc[df_features['racer_boat_number'] >= 3, 'prob_1st'] *= 1.40
 
-    # 5. 【環境要因のハード補正】
+    # 【環境要因のハード補正】
     if wind_direction == "向かい風" and (wind_speed >= 4 or wave_height >= 5):
         df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 0.10 
         df_features.loc[df_features['racer_boat_number'] >= 3, 'prob_1st'] *= 1.50 
@@ -232,7 +239,10 @@ if st.button("AI推論実行 (出走表・直前情報自動取得)", type="prim
     
     with st.spinner("データスクレイピング中..."):
         df_racers, fetch_error = fetch_race_card(jcd, rno)
-        dict_exhibition = fetch_beforeinfo(jcd, rno)
+        # ★ df_racers の情報を渡し、選手名で展示タイムを探索させる
+        dict_exhibition = None
+        if not fetch_error:
+            dict_exhibition = fetch_beforeinfo(jcd, rno, df_racers)
         
     if fetch_error:
         st.error(fetch_error)
