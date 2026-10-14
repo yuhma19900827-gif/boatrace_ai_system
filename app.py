@@ -52,7 +52,7 @@ def fetch_race_card(jcd, rno):
 
                 tds = tbody.find_all('td')
                 
-                # ★追加：F持ち（フライング）情報の取得（通常 tds[3] に記載）
+                # F持ち（フライング）情報の取得
                 try:
                     f_text = tds[3].text.strip()
                     has_f = ("F1" in f_text) or ("F2" in f_text) or ("F3" in f_text)
@@ -91,7 +91,7 @@ def fetch_race_card(jcd, rno):
     except Exception as e:
         return None, f"データ取得エラー ({e})"
 
-# --- 2.5 直前情報（展示タイム）の自動スクレイピング ---
+# --- 2.5 直前情報（展示タイム）の自動スクレイピング（堅牢版） ---
 def fetch_beforeinfo(jcd, rno):
     JST = timezone(timedelta(hours=+9), 'JST')
     today = datetime.now(JST).strftime('%Y%m%d')
@@ -103,22 +103,22 @@ def fetch_beforeinfo(jcd, rno):
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        tbodies = soup.find_all('tbody', class_='is-fs12')
-        if not tbodies or len(tbodies) < 6:
-            return None # まだ展示データが公開されていない
-            
-        for i in range(6):
-            tbody = tbodies[i]
-            tds = tbody.find_all('td')
-            # 展示タイムは通常 tds[4] に記載
-            try:
-                ext_time_text = tds[4].text.strip()
-                if ext_time_text:
-                    times[i+1] = float(ext_time_text)
-            except:
-                pass
-                
-        if len(times) == 6:
+        # ★修正：table構造に依存せず、各号艇の「色クラス」を探して確実に狙撃する
+        for boat in range(1, 7):
+            boat_td = soup.find('td', class_=f'is-boatColor{boat}')
+            if boat_td:
+                row = boat_td.find_parent('tr')
+                tds = row.find_all('td')
+                # tds[4] に展示タイムが入る
+                if len(tds) > 4:
+                    try:
+                        ext_time = float(tds[4].text.strip())
+                        times[boat] = ext_time
+                    except:
+                        pass
+                        
+        # 1つでも展示タイムが取れていれば成功（欠場艇考慮）
+        if len(times) > 0:
             return times
         return None
     except:
@@ -160,23 +160,20 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
         # 1. 基本能力値の算出
         ability_multiplier = 1.0 + ((w_rate - 5.0) * 0.20) + ((m_rate - 30.0) * 0.02)
         
-        # 2. 強者プレミアムとF持ちペナルティ（致命的減点）
+        # 2. 強者プレミアムとF持ちペナルティ
         if w_rate >= 6.5:
             ability_multiplier *= 1.30 
         elif w_rate < 4.5:
             ability_multiplier *= 0.60 
             
         if racer_data['has_f']:
-            # F持ちはスタートで遅れるため勝率を強制的に下げる
             ability_multiplier *= 0.60
 
         df_features.loc[df_features['racer_boat_number'] == boat, 'prob_1st'] *= max(0.05, ability_multiplier)
 
     # 3. 【直前情報：展示タイム1位の爆発的加点】
     if dict_exhibition:
-        # 展示タイムが一番小さい（速い）艇の号艇番号を取得
         fastest_boat = min(dict_exhibition, key=dict_exhibition.get)
-        # その艇の勝率・連対率を跳ね上げる（隠れ超抜機の検知）
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_1st'] *= 1.40
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_2nd'] *= 1.30
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_3rd'] *= 1.30
@@ -210,12 +207,11 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
                 
     df_results = pd.DataFrame(results).sort_values('AI勝率(%)', ascending=False).head(10)
     
-    # UI表示用に展示タイム最速艇の情報を返す
     fastest_msg = ""
     if dict_exhibition:
         fastest_boat = min(dict_exhibition, key=dict_exhibition.get)
         fastest_time = dict_exhibition[fastest_boat]
-        fastest_msg = f"🔥 展示タイム最速検知: {fastest_boat}号艇 ({fastest_time}秒) -> 確率ブースト適用済"
+        fastest_msg = f"🔥 展示タイム最速検知: {fastest_boat}号艇 ({fastest_time}秒) -> AI確率ブースト適用済"
         
     return df_results, fastest_msg, None
 
@@ -239,7 +235,6 @@ if st.button("AI推論実行 (出走表・直前情報自動取得)", type="prim
     if fetch_error:
         st.error(fetch_error)
     else:
-        # UIでの状況表示
         if dict_exhibition:
             st.success("✅ 【直前予想モード】出走表および展示タイムの取得に成功しました。")
         else:
