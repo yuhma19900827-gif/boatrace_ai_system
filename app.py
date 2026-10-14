@@ -28,13 +28,12 @@ def load_ai_models():
             
     return models[0], models[1], models[2]
 
-# --- 2. 出走表（勝率・モーター・F持ち）の自動スクレイピング ---
+# --- 2. 出走表（勝率・モーター・F持ち）の自動スクレイピング（★絶対抽出版） ---
 def fetch_race_card(jcd, rno):
     JST = timezone(timedelta(hours=+9), 'JST')
     today = datetime.now(JST).strftime('%Y%m%d')
     url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={today}"
     
-    # ★修正：3回のリトライ機構と30秒のタイムアウトを設定
     max_retries = 3
     soup = None
     for attempt in range(max_retries):
@@ -46,31 +45,36 @@ def fetch_race_card(jcd, rno):
         except requests.exceptions.RequestException as e:
             if attempt == max_retries - 1:
                 return None, f"データ取得エラー: 公式サイトが混雑しています ({e})"
-            time.sleep(2) # 2秒待って再トライ
+            time.sleep(2)
 
     if not soup:
         return None, "HTMLの解析に失敗しました。"
 
     try:
         racers = []
-        tbodies = soup.find_all('tbody', class_='is-fs12')
-        
-        if not tbodies or len(tbodies) < 6:
-            return None, "出走表データが取得できません。"
-            
-        for i in range(6):
-            tbody = tbodies[i]
+        # ★修正：関係ないテーブルを無視し、「枠番の色（is-boatColorX）」を基準に親ブロックを特定する
+        for i in range(1, 7):
+            boat_td = soup.find('td', class_=f'is-boatColor{i}')
+            if not boat_td:
+                continue
+                
+            tbody = boat_td.find_parent('tbody')
+            if not tbody:
+                continue
+
             try:
                 name_div = tbody.find('div', class_='is-fs18')
-                name = name_div.find('a').text.strip() if name_div and name_div.find('a') else f"{i+1}号艇選手"
+                name = name_div.find('a').text.strip() if name_div and name_div.find('a') else f"{i}号艇選手"
 
                 tds = tbody.find_all('td')
                 
-                try:
-                    f_text = tds[3].text.strip()
-                    has_f = ("F1" in f_text) or ("F2" in f_text) or ("F3" in f_text)
-                except:
-                    has_f = False
+                # F持ち情報の取得（テキスト全体からF1〜F3を探す堅牢版）
+                has_f = False
+                for td in tds:
+                    txt = td.text
+                    if "F1" in txt or "F2" in txt or "F3" in txt:
+                        has_f = True
+                        break
 
                 try:
                     national_data = list(tds[4].stripped_strings)
@@ -85,30 +89,32 @@ def fetch_race_card(jcd, rno):
                     motor_rate = 30.0
                     
             except Exception as e:
-                name = f"{i+1}号艇(エラー)"
+                name = f"{i}号艇(パースエラー)"
                 win_rate = 5.0
                 motor_rate = 30.0
                 has_f = False
                 
             racers.append({
-                'boat': i + 1,
+                'boat': i,
                 'name': name,
                 'win_rate': win_rate,
                 'motor_rate': motor_rate,
                 'has_f': has_f
             })
             
+        if not racers:
+            return None, "出走表データが公開されていません。"
+            
         return pd.DataFrame(racers), None
     except Exception as e:
         return None, f"データ抽出エラー ({e})"
 
-# --- 2.5 直前情報（展示タイム）の自動スクレイピング（選手名追尾型ロジック） ---
+# --- 2.5 直前情報（展示タイム）の自動スクレイピング ---
 def fetch_beforeinfo(jcd, rno, df_racers):
     JST = timezone(timedelta(hours=+9), 'JST')
     today = datetime.now(JST).strftime('%Y%m%d')
     url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={today}"
     
-    # ★修正：こちらも3回のリトライ機構を設定
     max_retries = 3
     soup = None
     for attempt in range(max_retries):
