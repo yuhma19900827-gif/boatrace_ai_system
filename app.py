@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 import itertools
 import pickle
+import time
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -33,11 +34,24 @@ def fetch_race_card(jcd, rno):
     today = datetime.now(JST).strftime('%Y%m%d')
     url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={today}"
     
+    # ★修正：3回のリトライ機構と30秒のタイムアウトを設定
+    max_retries = 3
+    soup = None
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, timeout=30)
+            response.encoding = 'utf-8'
+            soup = BeautifulSoup(response.text, 'html.parser')
+            break
+        except requests.exceptions.RequestException as e:
+            if attempt == max_retries - 1:
+                return None, f"データ取得エラー: 公式サイトが混雑しています ({e})"
+            time.sleep(2) # 2秒待って再トライ
+
+    if not soup:
+        return None, "HTMLの解析に失敗しました。"
+
     try:
-        response = requests.get(url, timeout=10)
-        response.encoding = 'utf-8'
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
         racers = []
         tbodies = soup.find_all('tbody', class_='is-fs12')
         
@@ -86,45 +100,53 @@ def fetch_race_card(jcd, rno):
             
         return pd.DataFrame(racers), None
     except Exception as e:
-        return None, f"データ取得エラー ({e})"
+        return None, f"データ抽出エラー ({e})"
 
-# --- 2.5 直前情報（展示タイム）の自動スクレイピング（★選手名追尾型ロジック） ---
+# --- 2.5 直前情報（展示タイム）の自動スクレイピング（選手名追尾型ロジック） ---
 def fetch_beforeinfo(jcd, rno, df_racers):
     JST = timezone(timedelta(hours=+9), 'JST')
     today = datetime.now(JST).strftime('%Y%m%d')
     url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={today}"
     
+    # ★修正：こちらも3回のリトライ機構を設定
+    max_retries = 3
+    soup = None
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, timeout=20)
+            response.encoding = 'utf-8'
+            soup = BeautifulSoup(response.text, 'html.parser')
+            break
+        except:
+            if attempt == max_retries - 1:
+                return None
+            time.sleep(2)
+
+    if not soup:
+        return None
+
     times = {}
     try:
-        response = requests.get(url, timeout=5)
-        response.encoding = 'utf-8'
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # ページ内のテーブル行（tr）やブロック（tbody）をすべて取得
         blocks = soup.find_all(['tbody', 'tr'])
         
         for index, row in df_racers.iterrows():
             boat = row['boat']
-            # 名前からスペースを取り除き、完全一致検索用のターゲットにする
             target_name = row['name'].replace(" ", "").replace(" ", "")
             
             for block in blocks:
                 block_text = block.text.replace(" ", "").replace(" ", "")
-                # ブロック内にその選手の名前が含まれていたら、その選手の行と断定する
                 if target_name in block_text:
                     tds = block.find_all('td')
                     for td in tds:
                         txt = td.text.strip()
                         try:
                             val = float(txt)
-                            # 競艇の展示タイムである 6.0秒〜7.5秒 の間なら抽出して確定
                             if 6.0 <= val <= 7.5:
                                 times[boat] = val
                                 break
                         except:
                             continue
                     
-                    # タイムが見つかれば、次の選手の検索へ進む
                     if boat in times:
                         break
                         
@@ -166,10 +188,8 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
         w_rate = racer_data['win_rate']
         m_rate = racer_data['motor_rate']
         
-        # 基本能力値の算出
         ability_multiplier = 1.0 + ((w_rate - 5.0) * 0.20) + ((m_rate - 30.0) * 0.02)
         
-        # 強者プレミアムとF持ちペナルティ
         if w_rate >= 6.5:
             ability_multiplier *= 1.30 
         elif w_rate < 4.5:
@@ -180,21 +200,18 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
 
         df_features.loc[df_features['racer_boat_number'] == boat, 'prob_1st'] *= max(0.05, ability_multiplier)
 
-    # 【直前情報：展示タイム1位の爆発的加点】
     if dict_exhibition:
         fastest_boat = min(dict_exhibition, key=dict_exhibition.get)
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_1st'] *= 1.40
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_2nd'] *= 1.30
         df_features.loc[df_features['racer_boat_number'] == fastest_boat, 'prob_3rd'] *= 1.30
 
-    # 【1号艇の鉄板・崩壊ロジック】
     if boat1_win_rate >= 6.5 and not df_racers[df_racers['boat'] == 1].iloc[0]['has_f']:
         df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 1.50
     elif boat1_win_rate < 5.0 or df_racers[df_racers['boat'] == 1].iloc[0]['has_f']:
         df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 0.40
         df_features.loc[df_features['racer_boat_number'] >= 3, 'prob_1st'] *= 1.40
 
-    # 【環境要因のハード補正】
     if wind_direction == "向かい風" and (wind_speed >= 4 or wave_height >= 5):
         df_features.loc[df_features['racer_boat_number'] == 1, 'prob_1st'] *= 0.10 
         df_features.loc[df_features['racer_boat_number'] >= 3, 'prob_1st'] *= 1.50 
@@ -237,9 +254,8 @@ if st.button("AI推論実行 (出走表・直前情報自動取得)", type="prim
     JST = timezone(timedelta(hours=+9), 'JST')
     today_display = datetime.now(JST).strftime('%Y年%m月%d日')
     
-    with st.spinner("データスクレイピング中..."):
+    with st.spinner("データスクレイピング中（通信待機中...）"):
         df_racers, fetch_error = fetch_race_card(jcd, rno)
-        # ★ df_racers の情報を渡し、選手名で展示タイムを探索させる
         dict_exhibition = None
         if not fetch_error:
             dict_exhibition = fetch_beforeinfo(jcd, rno, df_racers)
