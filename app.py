@@ -52,7 +52,7 @@ def fetch_race_card(jcd, rno):
 
                 tds = tbody.find_all('td')
                 
-                # F持ち（フライング）情報の取得
+                # F持ち情報の取得
                 try:
                     f_text = tds[3].text.strip()
                     has_f = ("F1" in f_text) or ("F2" in f_text) or ("F3" in f_text)
@@ -91,7 +91,7 @@ def fetch_race_card(jcd, rno):
     except Exception as e:
         return None, f"データ取得エラー ({e})"
 
-# --- 2.5 直前情報（展示タイム）の自動スクレイピング（堅牢版） ---
+# --- 2.5 直前情報（展示タイム）の自動スクレイピング（★絶対抽出版） ---
 def fetch_beforeinfo(jcd, rno):
     JST = timezone(timedelta(hours=+9), 'JST')
     today = datetime.now(JST).strftime('%Y%m%d')
@@ -103,21 +103,24 @@ def fetch_beforeinfo(jcd, rno):
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # ★修正：table構造に依存せず、各号艇の「色クラス」を探して確実に狙撃する
         for boat in range(1, 7):
             boat_td = soup.find('td', class_=f'is-boatColor{boat}')
             if boat_td:
                 row = boat_td.find_parent('tr')
                 tds = row.find_all('td')
-                # tds[4] に展示タイムが入る
-                if len(tds) > 4:
+                
+                # ★修正：HTMLの並び順（tdのインデックス）を無視し、展示タイム特有の「6.xx秒」という数値を強制検知する
+                for td in tds:
+                    txt = td.text.strip()
                     try:
-                        ext_time = float(tds[4].text.strip())
-                        times[boat] = ext_time
+                        val = float(txt)
+                        # 競艇の展示タイムは物理的に 6.0秒〜7.5秒 の間にしか収まらない。これを検知して引っこ抜く。
+                        if 6.0 <= val <= 7.5:
+                            times[boat] = val
+                            break
                     except:
-                        pass
+                        continue
                         
-        # 1つでも展示タイムが取れていれば成功（欠場艇考慮）
         if len(times) > 0:
             return times
         return None
@@ -149,7 +152,6 @@ def calculate_win_probability(df_racers, dict_exhibition, wind_direction, wind_s
     except Exception as e:
         return pd.DataFrame(), f"推論処理エラー: {e}"
 
-    # ★ 【勝率・F持ち・展示の極大化ブースト】
     boat1_win_rate = df_racers[df_racers['boat'] == 1].iloc[0]['win_rate']
     
     for boat in range(1, 7):
