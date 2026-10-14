@@ -41,11 +41,9 @@ def fetch_race_card(jcd, rno):
 
     try:
         racers = []
-        # 出走表メインテーブルでのみ使われる「巨大フォント(is-fs18)」の選手名divを全取得
         name_divs = soup.find_all('div', class_='is-fs18')
         
         for name_div in name_divs:
-            # 選手名の親ブロック(tbody)を逆算取得し、その中だけで完結させる（過去成績との混同を100%防止）
             tbody = name_div.find_parent('tbody')
             if not tbody: continue
             
@@ -96,7 +94,6 @@ def fetch_beforeinfo(jcd, rno):
 
     times = {}
     try:
-        # ページ上部（最初の6ブロック）のみを物理的にスライスしてスキャン
         tbodies = soup.find_all('tbody', class_='is-fs12')[:6]
         for tbody in tbodies:
             boat_td = tbody.find('td', class_=lambda c: c and 'is-boatColor' in c)
@@ -105,8 +102,11 @@ def fetch_beforeinfo(jcd, rno):
             try:
                 boat = int(boat_td.text.strip())
                 for td in tbody.find_all('td'):
+                    txt = td.text.strip()
+                    # ★修正：必ず「.（小数点）」が含まれている数字だけを展示タイムとして認識させる
+                    if '.' not in txt: continue 
                     try:
-                        val = float(td.text.strip())
+                        val = float(txt)
                         if 6.0 <= val <= 7.5:
                             times[boat] = val
                             break
