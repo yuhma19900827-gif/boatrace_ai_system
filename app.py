@@ -41,38 +41,39 @@ def fetch_race_card(jcd, rno):
 
     try:
         racers = []
-        for i in range(1, 7):
-            # 確実に対象号艇のカラーセルを狙撃
-            boat_td = soup.find(class_=f'is-boatColor{i}')
+        # 出走表メインテーブルでのみ使われる「巨大フォント(is-fs18)」の選手名divを全取得
+        name_divs = soup.find_all('div', class_='is-fs18')
+        
+        for name_div in name_divs:
+            # 選手名の親ブロック(tbody)を逆算取得し、その中だけで完結させる（過去成績との混同を100%防止）
+            tbody = name_div.find_parent('tbody')
+            if not tbody: continue
+            
+            boat_td = tbody.find('td', class_=lambda c: c and 'is-boatColor' in c)
             if not boat_td: continue
             
-            # 検索範囲を「その艇の行（tr）」だけに完全限定する（他の選手が混ざるのを物理的に防止）
-            tr = boat_td.find_parent('tr')
-            if not tr: continue
-
             try:
-                name_div = tr.find('div', class_='is-fs18')
-                name = name_div.find('a').text.strip() if name_div and name_div.find('a') else (name_div.text.strip() if name_div else f"{i}号艇")
-                tds = tr.find_all('td')
-                
-                has_f = False
-                if len(tds) > 3:
-                    has_f = any(f_val in tds[3].text for f_val in ["F1", "F2", "F3"])
-                
-                win_rate = 5.0
-                if len(tds) > 4:
-                    try: win_rate = float(list(tds[4].stripped_strings)[0])
-                    except: pass
-                    
-                motor_rate = 30.0
-                if len(tds) > 6:
-                    try: motor_rate = float(list(tds[6].stripped_strings)[1])
-                    except: pass
-            except:
-                name, win_rate, motor_rate, has_f = f"{i}号艇", 5.0, 30.0, False
-                
-            racers.append({'boat': i, 'name': name, 'win_rate': win_rate, 'motor_rate': motor_rate, 'has_f': has_f})
+                boat = int(boat_td.text.strip())
+            except: continue
             
+            if any(r['boat'] == boat for r in racers): continue
+            
+            name = name_div.find('a').text.strip() if name_div.find('a') else name_div.text.strip()
+            tds = tbody.find_all('td')
+            
+            has_f = any("F" in td.text for td in tds)
+            
+            try: win_rate = float(list(tds[4].stripped_strings)[0])
+            except: win_rate = 5.0
+                
+            try: motor_rate = float(list(tds[6].stripped_strings)[1])
+            except: motor_rate = 30.0
+                
+            racers.append({'boat': boat, 'name': name, 'win_rate': win_rate, 'motor_rate': motor_rate, 'has_f': has_f})
+            
+            if len(racers) == 6: break
+            
+        racers = sorted(racers, key=lambda x: x['boat'])
         if len(racers) < 2: return None, "出走表が未公開か取得不可"
         return pd.DataFrame(racers), None
     except Exception as e:
@@ -95,20 +96,22 @@ def fetch_beforeinfo(jcd, rno):
 
     times = {}
     try:
-        for i in range(1, 7):
-            boat_td = soup.find(class_=f'is-boatColor{i}')
+        # ページ上部（最初の6ブロック）のみを物理的にスライスしてスキャン
+        tbodies = soup.find_all('tbody', class_='is-fs12')[:6]
+        for tbody in tbodies:
+            boat_td = tbody.find('td', class_=lambda c: c and 'is-boatColor' in c)
             if not boat_td: continue
             
-            tr = boat_td.find_parent('tr')
-            if not tr: continue
-            
-            for td in tr.find_all('td'):
-                try:
-                    val = float(td.text.strip())
-                    if 6.0 <= val <= 7.5:
-                        times[i] = val
-                        break
-                except: continue
+            try:
+                boat = int(boat_td.text.strip())
+                for td in tbody.find_all('td'):
+                    try:
+                        val = float(td.text.strip())
+                        if 6.0 <= val <= 7.5:
+                            times[boat] = val
+                            break
+                    except: continue
+            except: continue
         return times if times else None
     except: return None
 
